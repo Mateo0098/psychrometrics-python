@@ -1,34 +1,56 @@
-# Psychrometrics Python
+# psychrometrics-python
 
-Python-based psychrometric calculator for moist-air properties, air mixing, sensible heating and cooling, and cooling with dehumidification.
+A small, script-oriented Python implementation of fundamental moist-air
+properties in SI units. The current phase intentionally contains no GUI, web
+application, or air-treatment process models.
 
-## Project status
+## Implemented calculations
 
-Initial development structure. The numerical model and validation cases will be implemented incrementally.
+- Saturation vapor pressure from -100 to 200 °C.
+- Vapor partial pressure from dry-bulb temperature and relative humidity.
+- Humidity ratio in kg water/kg dry air.
+- Moist-air enthalpy in kJ/kg dry air.
+- Specific volume in m³/kg dry air.
+- Dew-point temperature obtained by numerically inverting saturation pressure.
+- An immutable `PsychrometricState` assembled from dry-bulb temperature,
+  relative humidity, and total pressure.
 
-## Planned scope
+Relative humidity is always a fraction from `0` to `1`, pressure is in Pa, and
+temperature is in °C. Functions validate finite numbers and their physical or
+correlation ranges. At exactly zero relative humidity, the state's dew point is
+`None` because zero vapor pressure has no finite dew point in this model.
 
-- Psychrometric properties of moist air
-- State calculation from independent input properties
-- Air-stream mixing
-- Sensible heating and cooling
-- Cooling with dehumidification
-- Numerical validation against engineering reference cases
+## Example
 
-## Repository structure
-
-```text
-psychrometrics-python/
-├── psychrometrics.py
-├── examples/
-│   └── basic_state.py
-├── tests/
-│   └── test_psychrometrics.py
-├── README.md
-├── requirements.txt
-└── .gitignore
+```powershell
+python examples/basic_state.py
 ```
 
-## References
+```python
+from psychrometrics import calculate_state
 
-The implementation will be documented against the engineering equations and reference sources used during development.
+state = calculate_state(25.0, 0.50, 101_325.0)
+print(state.humidity_ratio_kg_kg_dry_air)
+print(state.enthalpy_kj_kg_dry_air)
+```
+
+## Tests
+
+Install the test dependency and run:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pytest
+```
+
+## Equation sources and scope
+
+The equations and constants are from ASHRAE Handbook—Fundamentals (2021),
+Chapter 1, *Psychrometrics*. Function docstrings identify the applicable
+equation and units. The open-source [PsychroLib implementation](https://github.com/psychrometrics/psychrolib)
+provides a publicly inspectable implementation of the same ASHRAE SI
+formulation.
+
+Not yet implemented: wet-bulb temperature, air mixing, heating, cooling,
+humidification, or dehumidification. Those are intentionally deferred until
+the core has been independently validated over its intended operating range.

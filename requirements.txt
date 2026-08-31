@@ -1,1 +1,1 @@
-# Numerical dependencies will be added as the model is implemented.
+pytest>=8.0,<9.0
