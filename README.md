@@ -51,6 +51,16 @@ equation and units. The open-source [PsychroLib implementation](https://github.c
 provides a publicly inspectable implementation of the same ASHRAE SI
 formulation.
 
+ASHRAE is the repository's primary formulation. The ASAE/ASABE D271 model used
+by the earlier university project is retained as a historical and comparative
+validation reference; it is not exposed as a second official calculation API,
+and its results are not assumed to be interchangeable with ASHRAE results.
+
+The test suite includes independent reference points transcribed by the
+official PsychroLib 2.5.0 SI tests from Tables 2 and 3 of ASHRAE
+Handbook—Fundamentals (2017), plus its independently calculated Excel cases.
+Tests state source units and tolerances alongside each reference case.
+
 Not yet implemented: wet-bulb temperature, air mixing, heating, cooling,
 humidification, or dehumidification. Those are intentionally deferred until
 the core has been independently validated over its intended operating range.

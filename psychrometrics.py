@@ -24,6 +24,8 @@ _MIN_TEMPERATURE_C = -100.0
 _MAX_TEMPERATURE_C = 200.0
 _MOLECULAR_WEIGHT_RATIO = 0.621945
 _DRY_AIR_GAS_CONSTANT_J_KG_K = 287.042
+_DEW_POINT_TOLERANCE_C = 0.001
+_DEW_POINT_MAX_ITERATIONS = 100
 
 
 def _finite(name: str, value: float) -> float:
@@ -57,9 +59,10 @@ def saturation_vapor_pressure(temperature_c: float) -> float:
     """Return saturation vapor pressure in Pa at ``temperature_c``.
 
     Uses ASHRAE Handbook—Fundamentals (2021), Chapter 1, equations 5 and 6.
-    The ice equation is used from -100 °C through the water triple point
-    (0.01 °C); the liquid-water equation is used above it through 200 °C.
-    Temperature is converted to kelvin before evaluating the correlation.
+    The ASHRAE correlation and this API both support -100 to 200 °C. The ice
+    equation is used through the water triple point (0.01 °C), inclusive; the
+    liquid-water equation is used above it. Temperature is converted to kelvin
+    before evaluating the correlation.
     """
     temperature_c = _temperature_c(temperature_c)
     temperature_k = temperature_c + 273.15
@@ -124,6 +127,8 @@ def moist_air_enthalpy(temperature_c: float, humidity_ratio_kg_kg: float) -> flo
 
     Uses ``h = 1.006 t + W (2501 + 1.86 t)`` from ASHRAE 2021,
     Chapter 1, eq. 30, with ``t`` in °C and ``W`` in kg/kg dry air.
+    The API restricts temperature to the -100 to 200 °C range used throughout
+    this module. This equation does not introduce a separate ice-phase term.
     """
     temperature_c = _temperature_c(temperature_c)
     humidity_ratio_kg_kg = _finite(
@@ -145,6 +150,7 @@ def specific_volume(
 
     Uses the ideal-gas moist-air relation from ASHRAE 2021, Chapter 1,
     eq. 28: ``v = R_da T (1 + 1.607858 W) / p`` in SI units.
+    The API accepts temperatures from -100 to 200 °C and pressure in Pa.
     """
     temperature_c = _temperature_c(temperature_c)
     humidity_ratio_kg_kg = _finite(
@@ -165,10 +171,12 @@ def specific_volume(
 def dew_point_temperature(vapor_pressure_pa: float) -> float:
     """Return dew-point temperature in °C from vapor pressure in Pa.
 
-    Numerically inverts the ASHRAE saturation-pressure equations with
-    bisection.  The supported pressure range corresponds to -100 to 200 °C.
-    A strictly positive pressure is required because dry air has no finite
-    dew point in this model.
+    Numerically inverts the ASHRAE ice/liquid saturation-pressure correlation
+    with bisection. The pressure range corresponds to the correlation and API
+    limits of -100 to 200 °C. Iteration stops when the enclosing temperature
+    interval is no wider than 0.001 °C, with at most 100 iterations. A pressure
+    below the supported range (including zero) has no representable dew point
+    in this API.
     """
     vapor_pressure_pa = _finite("vapor_pressure_pa", vapor_pressure_pa)
     minimum_pressure = saturation_vapor_pressure(_MIN_TEMPERATURE_C)
@@ -181,13 +189,19 @@ def dew_point_temperature(vapor_pressure_pa: float) -> float:
 
     low = _MIN_TEMPERATURE_C
     high = _MAX_TEMPERATURE_C
-    for _ in range(80):
+    for _ in range(_DEW_POINT_MAX_ITERATIONS):
         midpoint = (low + high) / 2.0
         if saturation_vapor_pressure(midpoint) < vapor_pressure_pa:
             low = midpoint
         else:
             high = midpoint
-    return (low + high) / 2.0
+        if high - low <= _DEW_POINT_TOLERANCE_C:
+            return (low + high) / 2.0
+
+    raise RuntimeError(
+        "dew-point bisection did not converge within "
+        f"{_DEW_POINT_MAX_ITERATIONS} iterations"
+    )
 
 
 @dataclass(frozen=True)
