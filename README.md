@@ -1,66 +1,89 @@
 # psychrometrics-python
 
-A small, script-oriented Python implementation of fundamental moist-air
-properties in SI units. The current phase intentionally contains no GUI, web
-application, or air-treatment process models.
+`psychrometrics-python` is a small, script-oriented Python library for
+calculating fundamental moist-air properties in SI units. It favors explicit,
+traceable equations and a simple module-based structure; it is not a GUI or web
+application.
 
-## Implemented calculations
+## Stable ASHRAE core
 
-- Saturation vapor pressure from -100 to 200 °C.
-- Vapor partial pressure from dry-bulb temperature and relative humidity.
-- Humidity ratio in kg water/kg dry air.
-- Moist-air enthalpy in kJ/kg dry air.
-- Specific volume in m³/kg dry air.
-- Dew-point temperature obtained by numerically inverting saturation pressure.
-- An immutable `PsychrometricState` assembled from dry-bulb temperature,
-  relative humidity, and total pressure.
+The primary implementation in `psychrometrics.py` uses formulations from the
+ASHRAE Handbook—Fundamentals. Its current public calculations are:
 
-Relative humidity is always a fraction from `0` to `1`, pressure is in Pa, and
-temperature is in °C. Functions validate finite numbers and their physical or
-correlation ranges. At exactly zero relative humidity, the state's dew point is
-`None` because zero vapor pressure has no finite dew point in this model.
+- saturation vapor pressure;
+- vapor pressure from dry-bulb temperature and relative humidity;
+- humidity ratio;
+- moist-air enthalpy;
+- specific volume;
+- dew-point temperature.
 
-## Example
+`calculate_state()` combines these properties in an immutable
+`PsychrometricState`. Temperatures are expressed in °C at the public API,
+pressures in Pa, relative humidity as a fraction from `0` to `1`, humidity ratio
+in kg water/kg dry air, enthalpy in kJ/kg dry air, and specific volume in
+m³/kg dry air. Function docstrings document applicable ranges and equations.
+
+## Experimental methods
+
+`alternative_methods.py` is a complementary research and validation module,
+not part of the stable API. It contains:
+
+- ASAE/ASABE saturation-pressure and latent-heat formulations;
+- the local Monteith pressure–temperature relation and its inverse;
+- an experimental ASAE wet-bulb-temperature solver;
+- a safeguarded Monteith-assisted strategy that proposes a narrower search
+  bracket while retaining the ASAE equation as the final solved root.
+
+The wet-bulb solvers were compared against PsychroLib over 70 states spanning
+two atmospheric pressures. In the published benchmark, the assisted strategy
+reduced mean bisection iterations from **15.429 to 12.257**, a **20.41%**
+reduction, and the maximum difference between the baseline and assisted roots
+was **0.000643165 K**. Both methods remained within approximately **0.04 °C**
+of the PsychroLib reference values.
+
+Fewer iterations did not improve measured computational performance in this
+case: the Monteith-assisted variant was approximately **6.65% slower** in the
+published timing run because estimation and bracket-verification work added
+overhead. These timings are platform-dependent and do not establish Monteith
+as a faster solver.
+
+See [docs/alternative_methods_validation.md](docs/alternative_methods_validation.md)
+for the equations, sources, validation matrix, safeguards, fallback behavior,
+and methodological limitations.
+
+## Running the project
+
+Run the minimal stable-core example:
 
 ```powershell
 python examples/basic_state.py
 ```
 
-```python
-from psychrometrics import calculate_state
+Run the reproducible experimental wet-bulb benchmark:
 
-state = calculate_state(25.0, 0.50, 101_325.0)
-print(state.humidity_ratio_kg_kg_dry_air)
-print(state.enthalpy_kj_kg_dry_air)
+```powershell
+python examples/benchmark_wet_bulb.py
 ```
 
-## Tests
-
-Install the test dependency and run:
+Install the test dependency and run the complete test suite:
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m pytest
 ```
 
-## Equation sources and scope
+## Repository structure
 
-The equations and constants are from ASHRAE Handbook—Fundamentals (2021),
-Chapter 1, *Psychrometrics*. Function docstrings identify the applicable
-equation and units. The open-source [PsychroLib implementation](https://github.com/psychrometrics/psychrolib)
-provides a publicly inspectable implementation of the same ASHRAE SI
-formulation.
+```text
+psychrometrics.py                       Stable ASHRAE calculations and state API
+alternative_methods.py                 Experimental ASAE/ASABE and Monteith methods
+examples/basic_state.py                Minimal stable-core example
+examples/benchmark_wet_bulb.py         Reproducible experimental benchmark
+tests/test_psychrometrics.py           Independent tests of the stable core
+tests/test_alternative_methods.py      Experimental-method and fallback tests
+docs/alternative_methods_validation.md Methodology and comparison results
+requirements.txt                       Test dependencies
+```
 
-ASHRAE is the repository's primary formulation. The ASAE/ASABE D271 model used
-by the earlier university project is retained as a historical and comparative
-validation reference; it is not exposed as a second official calculation API,
-and its results are not assumed to be interchangeable with ASHRAE results.
-
-The test suite includes independent reference points transcribed by the
-official PsychroLib 2.5.0 SI tests from Tables 2 and 3 of ASHRAE
-Handbook—Fundamentals (2017), plus its independently calculated Excel cases.
-Tests state source units and tolerances alongside each reference case.
-
-Not yet implemented: wet-bulb temperature, air mixing, heating, cooling,
-humidification, or dehumidification. Those are intentionally deferred until
-the core has been independently validated over its intended operating range.
+Air mixing, heating, cooling, humidification, and dehumidification processes
+are not currently implemented.
