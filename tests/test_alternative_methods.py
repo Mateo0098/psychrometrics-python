@@ -1,18 +1,24 @@
 """Validation of isolated historical and experimental psychrometric methods."""
 
+import statistics
+
 import pytest
 
+import alternative_methods
 from alternative_methods import (
     asae_latent_heat_sublimation,
     asae_latent_heat_vaporization,
     asae_saturation_temperature,
     asae_saturation_vapor_pressure,
     asae_wet_bulb_line_residual,
+    diagnose_experimental_asae_wet_bulb,
+    diagnose_wet_bulb_asae_monteith_assisted,
     experimental_asae_wet_bulb_temperature,
     monteith_temperature,
     monteith_vapor_pressure,
+    solve_wet_bulb_asae_monteith_assisted,
 )
-from psychrometrics import saturation_vapor_pressure
+from psychrometrics import saturation_vapor_pressure, vapor_pressure
 
 
 @pytest.mark.parametrize(
@@ -195,3 +201,112 @@ def test_experimental_wet_bulb_against_psychrolib(
         vapor_pressure_pa,
         101_325.0,
     ) == pytest.approx(0.0, abs=0.1)
+
+
+_MATRIX_TEMPERATURES_C = (-5.0, 0.0, 5.0, 15.0, 25.0, 35.0, 40.0)
+_MATRIX_RELATIVE_HUMIDITIES = (0.20, 0.40, 0.60, 0.80, 0.95)
+_PSYCHROLIB_WET_BULB_REFERENCES_C = {
+    101_325.0: (
+        (-8.671886509164, -7.720009955743, -6.790555950399, -5.883952262502, -5.218975669737),
+        (-4.904442510129, -3.605214272616, -2.355940749181, -1.155116445053, -0.284331570065),
+        (-1.410688887709, 0.576730022535, 2.115053992824, 3.587619435761, 4.652335742417),
+        (5.951701761414, 8.480841168507, 10.817791238817, 12.984923226758, 14.509585864664),
+        (12.512626793473, 16.209975343206, 19.471051315598, 22.380266663179, 24.368936187591),
+        (18.870393145730, 23.934202171157, 28.174814442103, 31.814175443002, 34.239575259683),
+        (22.032203219668, 27.831560606136, 32.560601399600, 36.550083159638, 39.180340157543),
+    ),
+    80_000.0: (
+        (-9.305201729629, -8.174760146055, -7.081668453990, -6.023440623811, -5.252889124596),
+        (-5.659400083295, -4.134270415762, -2.686105580016, -1.309044635916, -0.321352329454),
+        (-2.284483288611, -0.369363210702, 1.721899938671, 3.404854383223, 4.609370025723),
+        (4.848862086905, 7.756078857882, 10.392386373247, 12.796309703978, 14.466165798927),
+        (11.299215225492, 15.472412889023, 19.064313576275, 22.208170681293, 24.331248235954),
+        (17.637894271110, 23.247980696047, 27.819367261005, 31.671504853549, 34.208887495682),
+        (20.819537864333, 27.185789570019, 32.236227910548, 36.421758632719, 39.152253583844),
+    ),
+}
+
+
+def test_monteith_assisted_solver_over_70_state_matrix() -> None:
+    # PsychroLib 2.5.0 SI references were generated with its documented
+    # GetTWetBulbFromRelHum(T, RH, pressure) API. The 7 x 5 x 2 matrix covers
+    # every requested combination at sea level and 80 kPa; none is excluded.
+    baseline_iterations = []
+    assisted_iterations = []
+    reductions = []
+    reference_errors = []
+
+    for pressure_pa, reference_rows in _PSYCHROLIB_WET_BULB_REFERENCES_C.items():
+        for temperature_index, dry_bulb_c in enumerate(_MATRIX_TEMPERATURES_C):
+            for humidity_index, relative_humidity in enumerate(
+                _MATRIX_RELATIVE_HUMIDITIES
+            ):
+                partial_pressure = vapor_pressure(dry_bulb_c, relative_humidity)
+                baseline = diagnose_experimental_asae_wet_bulb(
+                    dry_bulb_c + 273.15, partial_pressure, pressure_pa
+                )
+                assisted = diagnose_wet_bulb_asae_monteith_assisted(
+                    dry_bulb_c + 273.15, partial_pressure, pressure_pa
+                )
+                reference_c = reference_rows[temperature_index][humidity_index]
+                baseline_c = baseline.wet_bulb_temperature_k - 273.15
+                assisted_c = assisted.wet_bulb_temperature_k - 273.15
+
+                assert assisted_c == pytest.approx(baseline_c, abs=0.001)
+                assert baseline_c == pytest.approx(reference_c, abs=0.04)
+                assert assisted_c == pytest.approx(reference_c, abs=0.04)
+                assert assisted.iterations < baseline.iterations
+                assert assisted.used_monteith_bracket
+                assert not assisted.fallback_used
+                assert assisted.initial_bracket_width_k < baseline.initial_bracket_width_k
+                assert baseline.final_bracket_width_k <= 0.001
+                assert assisted.final_bracket_width_k <= 0.001
+                assert solve_wet_bulb_asae_monteith_assisted(
+                    dry_bulb_c + 273.15, partial_pressure, pressure_pa
+                ) == assisted.wet_bulb_temperature_k
+
+                baseline_iterations.append(baseline.iterations)
+                assisted_iterations.append(assisted.iterations)
+                reductions.append(
+                    100.0
+                    * (baseline.iterations - assisted.iterations)
+                    / baseline.iterations
+                )
+                reference_errors.append(abs(assisted_c - reference_c))
+
+    assert len(reference_errors) == 70
+    assert max(reference_errors) < 0.04
+    assert statistics.mean(reductions) > 15.0
+    assert statistics.mean(assisted_iterations) < statistics.mean(
+        baseline_iterations
+    )
+
+
+def test_monteith_assisted_solver_falls_back_for_bad_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dry_bulb_k = 313.15
+    partial_pressure = vapor_pressure(40.0, 0.95)
+    baseline = diagnose_experimental_asae_wet_bulb(
+        dry_bulb_k, partial_pressure, 101_325.0
+    )
+
+    # Deliberately force the estimate to the ASAE minimum while the high-RH root
+    # is near dry bulb. Expansion must eventually recover the full safe bracket.
+    monkeypatch.setattr(
+        alternative_methods,
+        "_monteith_wet_bulb_estimates",
+        lambda *args, **kwargs: (
+            alternative_methods.ASAE_MIN_TEMPERATURE_K,
+            alternative_methods.ASAE_MIN_TEMPERATURE_K,
+        ),
+    )
+    assisted = diagnose_wet_bulb_asae_monteith_assisted(
+        dry_bulb_k, partial_pressure, 101_325.0
+    )
+
+    assert assisted.fallback_used
+    assert not assisted.used_monteith_bracket
+    assert assisted.bracket_expansions > 0
+    assert assisted.initial_bracket_width_k == baseline.initial_bracket_width_k
+    assert assisted.wet_bulb_temperature_k == baseline.wet_bulb_temperature_k

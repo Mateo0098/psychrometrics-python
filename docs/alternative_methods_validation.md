@@ -145,6 +145,86 @@ Comparison against PsychroLib 2.5.0 at 101325 Pa:
 \*Relative temperature error in Celsius is included only to reproduce the
 requested comparison; absolute error is the meaningful metric near 0 °C.
 
+## Monteith-assisted wet-bulb solver
+
+### Method
+
+The full-range ASAE bisection remains the baseline and its public experimental
+function is unchanged. The assisted variant does not accept the Monteith value
+as wet bulb and does not alter the ASAE residual, tolerance, or final root.
+Instead it performs these safeguarded steps:
+
+1. Select the documented Monteith coefficient without fitting it: `19.65`
+   with the 273.16 K ASAE anchor for dry bulb up to 293.15 K, otherwise `18`
+   with the 293.15 K ASAE anchor.
+2. Invert Monteith to estimate dew point.
+3. Evaluate the ASAE residual at estimated dew point and dry bulb, then use a
+   secant interpolation only to propose a wet-bulb center.
+4. Propose a bracket of at least ±1 K, or ±25% of the estimated dew-to-dry
+   interval when larger. These are search-policy values, not modified
+   psychrometric constants.
+5. Prove that the proposed endpoints bracket an ASAE sign change. If not,
+   double the half-width until a sign change is found or the full baseline
+   interval is recovered.
+6. Run the same ASAE bisection with the same 0.001 K stopping width. A forced
+   bad-estimate test verifies fallback to the full interval and the baseline
+   root.
+
+`WetBulbSolveDiagnostics` records the temperature, iteration count, proposed,
+initial, and final bracket widths, expansions, Monteith-bracket use, fallback,
+and both intermediate estimates. The final root always comes from the ASAE
+equation.
+
+### Validation matrix and precision
+
+The matrix contains all 70 combinations of:
+
+- dry bulb: -5, 0, 5, 15, 25, 35, and 40 °C;
+- relative humidity: 20, 40, 60, 80, and 95%;
+- atmospheric pressure: 101325 and 80000 Pa.
+
+No state was excluded. PsychroLib 2.5.0 SI reference values are frozen in the
+test suite, so validation does not require a runtime dependency.
+
+| Metric over 70 states | Baseline | Monteith-assisted |
+|---|---:|---:|
+| Maximum error vs PsychroLib | 0.035802 °C | 0.035986 °C |
+| Mean bisection iterations | 15.429 | 12.257 |
+| Median bisection iterations | 16 | 12 |
+| Iteration range | 14--16 | 11--14 |
+| Natural fallback cases | n/a | 0 (0%) |
+| Cases with more assisted iterations | n/a | 0 |
+
+The maximum baseline/assisted result difference is `0.000643165 K`, below the
+shared 0.001 K convergence width. The mean per-case iteration reduction is
+20.41%. In 37 of 70 states the assisted rounding point is marginally farther
+from PsychroLib than the baseline point, but both remain within 0.04 °C. Thus
+the assistance preserves practical accuracy but does not improve it.
+
+### Timing
+
+`examples/benchmark_wet_bulb.py` uses only the standard library and the local
+modules. Its default run times 200 repetitions of all 70 cases in five rounds,
+alternating method order and reporting the median round. On the development
+Windows/Python 3.14.4 environment (14,000 solves per method per round), the
+two complete observed runs were:
+
+| Run | Baseline median | Assisted median | Assisted time change |
+|---:|---:|---:|---:|
+| 1 | 0.919919 s | 1.007807 s | 9.55% slower |
+| 2 (final validation) | 1.305608 s | 1.374077 s | 5.24% slower |
+
+The assisted method was 5.24--9.55% slower in these complete runs despite
+20.41% fewer bisection iterations. Monteith inversion, two extra ASAE residual
+evaluations, secant construction, bracket verification, and diagnostics cost
+more than the saved iterations on this workload. Individual runs showed normal
+timing variation, so absolute times are platform-specific; the benchmark must
+be rerun on a target system before making performance claims.
+
+The data therefore support an algorithmic reduction in bisection iterations,
+but do **not** justify describing Monteith assistance as a faster solver. It
+remains an experimental comparison path with safeguarded fallback.
+
 ## Dossat ambiguity
 
 The report reproduces only the relation `h_L = w h_w` for one pound of dry

@@ -12,6 +12,7 @@ report are implemented here.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 
@@ -25,6 +26,29 @@ _ASAE_WET_BULB_MASS_RATIO = 0.62194
 _ASAE_DRY_AIR_HEAT_CAPACITY_J_KG_K = 1006.9254
 _WET_BULB_TOLERANCE_K = 0.001
 _WET_BULB_MAX_ITERATIONS = 100
+_MONTEITH_INITIAL_BRACKET_FRACTION = 0.25
+_MONTEITH_MINIMUM_HALF_WIDTH_K = 1.0
+
+
+@dataclass(frozen=True)
+class WetBulbSolveDiagnostics:
+    """Diagnostics for an experimental ASAE wet-bulb solve.
+
+    Widths are in K. ``proposed_bracket_width_k`` is the first Monteith-based
+    proposal (or the full baseline width), while ``initial_bracket_width_k``
+    is the verified bracket actually passed to bisection.
+    """
+
+    wet_bulb_temperature_k: float
+    iterations: int
+    used_monteith_bracket: bool
+    fallback_used: bool
+    bracket_expansions: int
+    proposed_bracket_width_k: float
+    initial_bracket_width_k: float
+    final_bracket_width_k: float
+    monteith_dew_point_estimate_k: float | None = None
+    wet_bulb_estimate_k: float | None = None
 
 
 def _finite(name: str, value: float) -> float:
@@ -282,17 +306,11 @@ def asae_wet_bulb_line_residual(
     )
 
 
-def experimental_asae_wet_bulb_temperature(
+def _validate_wet_bulb_solver_inputs(
     dry_bulb_temperature_k: float,
     vapor_pressure_pa: float,
     atmospheric_pressure_pa: float,
-) -> float:
-    """Solve the reconstructed ASAE wet-bulb line by bisection, returning K.
-
-    This experimental solver is restricted to 255.38--338.72 K. It does not
-    use the incomplete Dossat proposal, and it is not part of the stable
-    ASHRAE state API.
-    """
+) -> tuple[float, float, float]:
     dry_bulb_temperature_k = _in_range(
         "dry_bulb_temperature_k",
         dry_bulb_temperature_k,
@@ -313,41 +331,312 @@ def experimental_asae_wet_bulb_temperature(
         )
     if vapor_pressure_pa >= atmospheric_pressure_pa:
         raise ValueError("vapor_pressure_pa must be less than atmospheric pressure")
+    return dry_bulb_temperature_k, vapor_pressure_pa, atmospheric_pressure_pa
 
-    low = ASAE_MIN_TEMPERATURE_K
-    high = dry_bulb_temperature_k
-    low_residual = asae_wet_bulb_line_residual(
+
+def _wet_bulb_residual(
+    dry_bulb_temperature_k: float,
+    wet_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> float:
+    return asae_wet_bulb_line_residual(
+        dry_bulb_temperature_k,
+        wet_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    )
+
+
+def _has_sign_change(low_residual: float, high_residual: float) -> bool:
+    return (
+        low_residual == 0.0
+        or high_residual == 0.0
+        or low_residual * high_residual < 0.0
+    )
+
+
+def _bisect_wet_bulb_bracket(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+    low: float,
+    high: float,
+    *,
+    used_monteith_bracket: bool,
+    fallback_used: bool,
+    bracket_expansions: int,
+    proposed_bracket_width_k: float,
+    monteith_dew_point_estimate_k: float | None = None,
+    wet_bulb_estimate_k: float | None = None,
+) -> WetBulbSolveDiagnostics:
+    initial_bracket_width = high - low
+    low_residual = _wet_bulb_residual(
         dry_bulb_temperature_k, low, vapor_pressure_pa, atmospheric_pressure_pa
     )
-    high_residual = asae_wet_bulb_line_residual(
+    high_residual = _wet_bulb_residual(
         dry_bulb_temperature_k, high, vapor_pressure_pa, atmospheric_pressure_pa
     )
-    if low_residual == 0.0:
-        return low
-    if high_residual == 0.0:
-        return high
-    if low_residual * high_residual > 0.0:
-        raise ValueError("wet-bulb solution is outside the documented ASAE range")
+    if not _has_sign_change(low_residual, high_residual):
+        raise ValueError("wet-bulb bracket does not contain an ASAE root")
 
-    for _ in range(_WET_BULB_MAX_ITERATIONS):
+    if low_residual == 0.0:
+        return WetBulbSolveDiagnostics(
+            low,
+            0,
+            used_monteith_bracket,
+            fallback_used,
+            bracket_expansions,
+            proposed_bracket_width_k,
+            initial_bracket_width,
+            initial_bracket_width,
+            monteith_dew_point_estimate_k,
+            wet_bulb_estimate_k,
+        )
+    if high_residual == 0.0:
+        return WetBulbSolveDiagnostics(
+            high,
+            0,
+            used_monteith_bracket,
+            fallback_used,
+            bracket_expansions,
+            proposed_bracket_width_k,
+            initial_bracket_width,
+            initial_bracket_width,
+            monteith_dew_point_estimate_k,
+            wet_bulb_estimate_k,
+        )
+
+    for iteration in range(1, _WET_BULB_MAX_ITERATIONS + 1):
         midpoint = (low + high) / 2.0
-        midpoint_residual = asae_wet_bulb_line_residual(
+        midpoint_residual = _wet_bulb_residual(
             dry_bulb_temperature_k,
             midpoint,
             vapor_pressure_pa,
             atmospheric_pressure_pa,
         )
         if midpoint_residual == 0.0:
-            return midpoint
+            return WetBulbSolveDiagnostics(
+                midpoint,
+                iteration,
+                used_monteith_bracket,
+                fallback_used,
+                bracket_expansions,
+                proposed_bracket_width_k,
+                initial_bracket_width,
+                0.0,
+                monteith_dew_point_estimate_k,
+                wet_bulb_estimate_k,
+            )
         if low_residual * midpoint_residual <= 0.0:
             high = midpoint
         else:
             low = midpoint
             low_residual = midpoint_residual
         if high - low <= _WET_BULB_TOLERANCE_K:
-            return (low + high) / 2.0
+            return WetBulbSolveDiagnostics(
+                (low + high) / 2.0,
+                iteration,
+                used_monteith_bracket,
+                fallback_used,
+                bracket_expansions,
+                proposed_bracket_width_k,
+                initial_bracket_width,
+                high - low,
+                monteith_dew_point_estimate_k,
+                wet_bulb_estimate_k,
+            )
 
     raise RuntimeError(
         "experimental ASAE wet-bulb bisection did not converge within "
         f"{_WET_BULB_MAX_ITERATIONS} iterations"
     )
+
+
+def diagnose_experimental_asae_wet_bulb(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> WetBulbSolveDiagnostics:
+    """Run the full-bracket ASAE baseline and return solve diagnostics."""
+    (
+        dry_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    ) = _validate_wet_bulb_solver_inputs(
+        dry_bulb_temperature_k, vapor_pressure_pa, atmospheric_pressure_pa
+    )
+    full_width = dry_bulb_temperature_k - ASAE_MIN_TEMPERATURE_K
+    return _bisect_wet_bulb_bracket(
+        dry_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+        ASAE_MIN_TEMPERATURE_K,
+        dry_bulb_temperature_k,
+        used_monteith_bracket=False,
+        fallback_used=False,
+        bracket_expansions=0,
+        proposed_bracket_width_k=full_width,
+    )
+
+
+def experimental_asae_wet_bulb_temperature(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> float:
+    """Solve the baseline ASAE wet-bulb line by full-bracket bisection in K.
+
+    This existing API remains the experimental baseline. It is restricted to
+    255.38--338.72 K and does not use Monteith or Dossat.
+    """
+    return diagnose_experimental_asae_wet_bulb(
+        dry_bulb_temperature_k, vapor_pressure_pa, atmospheric_pressure_pa
+    ).wet_bulb_temperature_k
+
+
+def _monteith_reference(dry_bulb_temperature_k: float) -> tuple[float, float, float]:
+    if dry_bulb_temperature_k <= 293.15:
+        reference_temperature_k = ASAE_PHASE_TRANSITION_K
+        coefficient = 19.65
+    else:
+        reference_temperature_k = 293.15
+        coefficient = 18.0
+    reference_pressure_pa = asae_saturation_vapor_pressure(reference_temperature_k)
+    return reference_temperature_k, reference_pressure_pa, coefficient
+
+
+def _monteith_wet_bulb_estimates(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> tuple[float, float]:
+    """Return Monteith dew-point and secant wet-bulb estimates in K."""
+    full_low = ASAE_MIN_TEMPERATURE_K
+    full_high = dry_bulb_temperature_k
+    reference_temperature, reference_pressure, coefficient = _monteith_reference(
+        dry_bulb_temperature_k
+    )
+    monteith_dew_point = monteith_temperature(
+        vapor_pressure_pa,
+        reference_temperature,
+        reference_pressure,
+        coefficient,
+    )
+    monteith_dew_point = min(max(monteith_dew_point, full_low), full_high)
+
+    dew_residual = _wet_bulb_residual(
+        dry_bulb_temperature_k,
+        monteith_dew_point,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    )
+    dry_residual = _wet_bulb_residual(
+        dry_bulb_temperature_k,
+        full_high,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    )
+    residual_difference = dry_residual - dew_residual
+    if residual_difference == 0.0:
+        wet_bulb_estimate = (monteith_dew_point + full_high) / 2.0
+    else:
+        wet_bulb_estimate = monteith_dew_point - dew_residual * (
+            full_high - monteith_dew_point
+        ) / residual_difference
+    wet_bulb_estimate = min(max(wet_bulb_estimate, full_low), full_high)
+    return monteith_dew_point, wet_bulb_estimate
+
+
+def diagnose_wet_bulb_asae_monteith_assisted(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> WetBulbSolveDiagnostics:
+    """Solve the ASAE root using a verified, expandable Monteith bracket.
+
+    Monteith estimates a dew point from an unmodified documented coefficient.
+    A secant interpolation of ASAE residuals then estimates wet bulb. The first
+    bracket spans at least ±1 K and otherwise ±25% of the estimated dew-to-dry
+    interval. It is doubled until a sign change is proven. Failure to obtain a
+    narrower valid bracket triggers the exact baseline bracket.
+    """
+    (
+        dry_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    ) = _validate_wet_bulb_solver_inputs(
+        dry_bulb_temperature_k, vapor_pressure_pa, atmospheric_pressure_pa
+    )
+    full_low = ASAE_MIN_TEMPERATURE_K
+    full_high = dry_bulb_temperature_k
+    monteith_dew_point, wet_bulb_estimate = _monteith_wet_bulb_estimates(
+        dry_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+    )
+
+    estimated_span = max(full_high - monteith_dew_point, 0.0)
+    half_width = max(
+        _MONTEITH_MINIMUM_HALF_WIDTH_K,
+        _MONTEITH_INITIAL_BRACKET_FRACTION * estimated_span,
+    )
+    low = max(full_low, wet_bulb_estimate - half_width)
+    high = min(full_high, wet_bulb_estimate + half_width)
+    proposed_width = high - low
+    expansions = 0
+
+    while True:
+        low_residual = _wet_bulb_residual(
+            dry_bulb_temperature_k,
+            low,
+            vapor_pressure_pa,
+            atmospheric_pressure_pa,
+        )
+        high_residual = _wet_bulb_residual(
+            dry_bulb_temperature_k,
+            high,
+            vapor_pressure_pa,
+            atmospheric_pressure_pa,
+        )
+        if _has_sign_change(low_residual, high_residual):
+            break
+        if low == full_low and high == full_high:
+            break
+        expansions += 1
+        half_width *= 2.0
+        low = max(full_low, wet_bulb_estimate - half_width)
+        high = min(full_high, wet_bulb_estimate + half_width)
+
+    fallback_used = low == full_low and high == full_high
+    used_monteith_bracket = not fallback_used
+    if not _has_sign_change(low_residual, high_residual):
+        low = full_low
+        high = full_high
+        fallback_used = True
+        used_monteith_bracket = False
+
+    return _bisect_wet_bulb_bracket(
+        dry_bulb_temperature_k,
+        vapor_pressure_pa,
+        atmospheric_pressure_pa,
+        low,
+        high,
+        used_monteith_bracket=used_monteith_bracket,
+        fallback_used=fallback_used,
+        bracket_expansions=expansions,
+        proposed_bracket_width_k=proposed_width,
+        monteith_dew_point_estimate_k=monteith_dew_point,
+        wet_bulb_estimate_k=wet_bulb_estimate,
+    )
+
+
+def solve_wet_bulb_asae_monteith_assisted(
+    dry_bulb_temperature_k: float,
+    vapor_pressure_pa: float,
+    atmospheric_pressure_pa: float,
+) -> float:
+    """Return the ASAE wet-bulb root using safeguarded Monteith assistance."""
+    return diagnose_wet_bulb_asae_monteith_assisted(
+        dry_bulb_temperature_k, vapor_pressure_pa, atmospheric_pressure_pa
+    ).wet_bulb_temperature_k
