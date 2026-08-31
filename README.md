@@ -154,6 +154,13 @@ Run the minimal stable-core example:
 python examples/basic_state.py
 ```
 
+Run the flexible solver example, which reconstructs one state from four input
+pairs:
+
+```powershell
+python examples/flexible_state_solver.py
+```
+
 Run the reproducible experimental wet-bulb benchmark:
 
 ```powershell
@@ -176,6 +183,7 @@ wet-bulb references and validation of invalid or over-specified solver inputs.
 psychrometrics.py                       Stable ASHRAE calculations and state API
 alternative_methods.py                 Experimental ASAE/ASABE and Monteith methods
 examples/basic_state.py                Minimal stable-core example
+examples/flexible_state_solver.py      Stable flexible-solver example
 examples/benchmark_wet_bulb.py         Reproducible experimental benchmark
 tests/test_psychrometrics.py           Independent tests of the stable core
 tests/test_alternative_methods.py      Experimental-method and fallback tests
