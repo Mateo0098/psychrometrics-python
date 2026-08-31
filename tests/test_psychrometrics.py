@@ -11,6 +11,7 @@ from psychrometrics import (
     humidity_ratio,
     moist_air_enthalpy,
     saturation_vapor_pressure,
+    solve_state,
     specific_volume,
     vapor_pressure,
 )
@@ -175,3 +176,159 @@ def test_dew_point_reports_non_convergence(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(psychrometrics, "_DEW_POINT_MAX_ITERATIONS", 0)
     with pytest.raises(RuntimeError, match="did not converge"):
         dew_point_temperature(872.6)
+
+
+@pytest.mark.parametrize(
+    ("dry_bulb_c", "relative_humidity", "pressure_pa"),
+    [
+        (-5.0, 0.60, 101_325.0),
+        (15.0, 0.80, 80_000.0),
+        (25.0, 0.50, 101_325.0),
+        (35.0, 0.20, 101_325.0),
+        (5.0, 0.95, 80_000.0),
+        (25.0, 0.999, 101_325.0),
+    ],
+)
+def test_solve_state_reconstructs_rh_state_from_dew_point_and_humidity_ratio(
+    dry_bulb_c: float,
+    relative_humidity: float,
+    pressure_pa: float,
+) -> None:
+    reference = calculate_state(dry_bulb_c, relative_humidity, pressure_pa)
+    from_rh = solve_state(
+        dry_bulb_c,
+        pressure_pa=pressure_pa,
+        relative_humidity=relative_humidity,
+    )
+    from_dew_point = solve_state(
+        dry_bulb_c,
+        pressure_pa=pressure_pa,
+        dew_point_temperature_c=reference.dew_point_temperature_c,
+    )
+    from_humidity_ratio = solve_state(
+        dry_bulb_c,
+        pressure_pa=pressure_pa,
+        humidity_ratio_kg_kg_dry_air=reference.humidity_ratio_kg_kg_dry_air,
+    )
+
+    assert from_rh == reference
+    assert from_dew_point.relative_humidity == pytest.approx(
+        reference.relative_humidity, abs=5e-5
+    )
+    assert from_dew_point.humidity_ratio_kg_kg_dry_air == pytest.approx(
+        reference.humidity_ratio_kg_kg_dry_air, rel=1e-4
+    )
+    assert from_dew_point.dew_point_temperature_c == pytest.approx(
+        reference.dew_point_temperature_c, abs=0.001
+    )
+    assert from_humidity_ratio.relative_humidity == pytest.approx(
+        reference.relative_humidity, abs=1e-12
+    )
+    assert from_humidity_ratio.humidity_ratio_kg_kg_dry_air == pytest.approx(
+        reference.humidity_ratio_kg_kg_dry_air, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "dry_bulb_c",
+        "wet_bulb_c",
+        "pressure_pa",
+        "psychrolib_relative_humidity",
+    ),
+    [
+        (-5.0, -7.720009955743, 101_325.0, 0.40),
+        (0.0, -2.355940749181, 101_325.0, 0.60),
+        (25.0, 17.889432148553, 101_325.0, 0.50),
+        (40.0, 39.180340157543, 101_325.0, 0.95),
+        (15.0, 4.848862086905, 80_000.0, 0.20),
+        (5.0, 4.609370025723, 80_000.0, 0.95),
+    ],
+)
+def test_solve_state_from_wet_bulb_against_psychrolib(
+    dry_bulb_c: float,
+    wet_bulb_c: float,
+    pressure_pa: float,
+    psychrolib_relative_humidity: float,
+) -> None:
+    # Independent wet-bulb values are frozen from PsychroLib 2.5.0 SI
+    # GetTWetBulbFromRelHum. PsychroLib solves to a 0.001 °C bracket, so the
+    # inverse relative humidity is allowed abs=5e-5.
+    state = solve_state(
+        dry_bulb_c,
+        pressure_pa=pressure_pa,
+        wet_bulb_temperature_c=wet_bulb_c,
+    )
+    assert state.relative_humidity == pytest.approx(
+        psychrolib_relative_humidity, abs=5e-5
+    )
+
+
+def test_solve_state_accepts_zero_humidity_ratio() -> None:
+    state = solve_state(
+        20.0,
+        pressure_pa=101_325.0,
+        humidity_ratio_kg_kg_dry_air=0.0,
+    )
+    assert state.relative_humidity == 0.0
+    assert state.dew_point_temperature_c is None
+
+
+def test_solve_state_requires_explicit_pressure() -> None:
+    with pytest.raises(TypeError, match="pressure_pa"):
+        solve_state(25.0, relative_humidity=0.50)
+    with pytest.raises(TypeError, match="dry_bulb_temperature_c"):
+        solve_state(pressure_pa=101_325.0, relative_humidity=0.50)
+
+
+def test_solve_state_rejects_insufficient_or_ambiguous_inputs() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        solve_state(25.0, pressure_pa=101_325.0)
+    with pytest.raises(ValueError, match="exactly one"):
+        solve_state(
+            25.0,
+            pressure_pa=101_325.0,
+            relative_humidity=0.50,
+            dew_point_temperature_c=15.0,
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        solve_state(
+            25.0,
+            pressure_pa=101_325.0,
+            relative_humidity=0.50,
+            dew_point_temperature_c=15.0,
+            humidity_ratio_kg_kg_dry_air=0.01,
+        )
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        solve_state(25.0, pressure_pa=101_325.0, enthalpy_kj_kg=50.0)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"relative_humidity": 1.01},
+        {"dew_point_temperature_c": 25.1},
+        {"wet_bulb_temperature_c": 25.1},
+        {"humidity_ratio_kg_kg_dry_air": -0.001},
+    ],
+)
+def test_solve_state_rejects_invalid_humidity_inputs(arguments: dict) -> None:
+    with pytest.raises(ValueError):
+        solve_state(25.0, pressure_pa=101_325.0, **arguments)
+
+
+def test_solve_state_rejects_invalid_pressure_and_impossible_states() -> None:
+    with pytest.raises(ValueError, match="greater than"):
+        solve_state(25.0, pressure_pa=0.0, relative_humidity=0.50)
+    with pytest.raises(ValueError, match="physically impossible"):
+        solve_state(
+            25.0,
+            pressure_pa=101_325.0,
+            humidity_ratio_kg_kg_dry_air=1.0,
+        )
+    with pytest.raises(ValueError, match="negative humidity ratio"):
+        solve_state(
+            25.0,
+            pressure_pa=101_325.0,
+            wet_bulb_temperature_c=-20.0,
+        )

@@ -23,6 +23,89 @@ pressures in Pa, relative humidity as a fraction from `0` to `1`, humidity ratio
 in kg water/kg dry air, enthalpy in kJ/kg dry air, and specific volume in
 m³/kg dry air. Function docstrings document applicable ranges and equations.
 
+## Use as a psychrometric calculator
+
+The stable API has two levels. `calculate_state()` is the simplest option: it
+accepts dry-bulb temperature in °C, relative humidity as a fraction from `0`
+to `1` (not as a percentage), and atmospheric pressure in Pa:
+
+```python
+from psychrometrics import calculate_state
+
+state = calculate_state(
+    dry_bulb_temperature_c=25.0,
+    relative_humidity=0.50,
+    pressure_pa=101325.0,
+)
+
+print(f"Saturation vapor pressure: {state.saturation_vapor_pressure_pa:.2f} Pa")
+print(f"Vapor pressure: {state.vapor_pressure_pa:.2f} Pa")
+print(
+    "Humidity ratio: "
+    f"{state.humidity_ratio_kg_kg_dry_air:.6f} kg/kg dry air"
+)
+print(f"Moist-air enthalpy: {state.enthalpy_kj_kg_dry_air:.2f} kJ/kg dry air")
+print(
+    "Specific volume: "
+    f"{state.specific_volume_m3_kg_dry_air:.4f} m³/kg dry air"
+)
+print(f"Dew-point temperature: {state.dew_point_temperature_c:.2f} °C")
+```
+
+Output for 25 °C, 50% relative humidity, and 101325 Pa:
+
+```text
+Saturation vapor pressure: 3169.22 Pa
+Vapor pressure: 1584.61 Pa
+Humidity ratio: 0.009881 kg/kg dry air
+Moist-air enthalpy: 50.32 kJ/kg dry air
+Specific volume: 0.8580 m³/kg dry air
+Dew-point temperature: 13.86 °C
+```
+
+The returned `PsychrometricState` also retains the three inputs as
+`dry_bulb_temperature_c`, `relative_humidity`, and `pressure_pa`. Its calculated
+properties are `saturation_vapor_pressure_pa`, `vapor_pressure_pa`,
+`humidity_ratio_kg_kg_dry_air`, `enthalpy_kj_kg_dry_air`,
+`specific_volume_m3_kg_dry_air`, and `dew_point_temperature_c`. The experimental
+methods described below are separate from this basic calculator workflow.
+
+For more flexible input, `solve_state()` supports four specific property pairs,
+always with explicit atmospheric pressure. Every route returns the same
+`PsychrometricState` and uses the stable ASHRAE core.
+
+| Input pair | Supported |
+|---|---|
+| Tdb + RH | Yes |
+| Tdb + Tdp | Yes |
+| Tdb + W | Yes |
+| Tdb + Twb | Yes |
+
+```python
+from psychrometrics import solve_state
+
+from_rh = solve_state(
+    25.0, pressure_pa=101325.0, relative_humidity=0.50
+)
+from_dew_point = solve_state(
+    25.0, pressure_pa=101325.0, dew_point_temperature_c=13.8644
+)
+from_humidity_ratio = solve_state(
+    25.0,
+    pressure_pa=101325.0,
+    humidity_ratio_kg_kg_dry_air=0.00988115,
+)
+from_wet_bulb = solve_state(
+    25.0, pressure_pa=101325.0, wet_bulb_temperature_c=17.8894
+)
+```
+
+Here Tdb, Tdp, and Twb are dry-bulb, dew-point, and wet-bulb temperatures in
+°C; RH is a fraction; and W is kg water/kg dry air. This is a flexible state
+solver for the four listed pairs, not an unrestricted any-two-properties
+solver. The wet-bulb route uses the ASHRAE liquid-water or ice equation as
+appropriate; it does not use `alternative_methods.py`.
+
 ## Experimental methods
 
 `alternative_methods.py` is a complementary research and validation module,
@@ -71,6 +154,9 @@ Install the test dependency and run the complete test suite:
 python -m pip install -r requirements.txt
 python -m pytest
 ```
+
+The current suite contains 80 tests, including independent PsychroLib wet-bulb
+references and validation of invalid or over-specified solver inputs.
 
 ## Repository structure
 

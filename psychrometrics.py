@@ -26,6 +26,7 @@ _MOLECULAR_WEIGHT_RATIO = 0.621945
 _DRY_AIR_GAS_CONSTANT_J_KG_K = 287.042
 _DEW_POINT_TOLERANCE_C = 0.001
 _DEW_POINT_MAX_ITERATIONS = 100
+_STATE_TEMPERATURE_TOLERANCE_C = 0.001
 
 
 def _finite(name: str, value: float) -> float:
@@ -256,4 +257,160 @@ def calculate_state(
             dry_bulb_temperature_c, ratio, pressure_pa
         ),
         dew_point_temperature_c=dew_point,
+    )
+
+
+def _vapor_pressure_from_humidity_ratio(
+    humidity_ratio_kg_kg_dry_air: float,
+    pressure_pa: float,
+) -> float:
+    """Invert ASHRAE equation 20 and return vapor pressure in Pa."""
+    humidity_ratio_kg_kg_dry_air = _finite(
+        "humidity_ratio_kg_kg_dry_air", humidity_ratio_kg_kg_dry_air
+    )
+    pressure_pa = _pressure_pa(pressure_pa)
+    if humidity_ratio_kg_kg_dry_air < 0.0:
+        raise ValueError(
+            "humidity_ratio_kg_kg_dry_air must be at least 0 kg/kg"
+        )
+    return (
+        pressure_pa
+        * humidity_ratio_kg_kg_dry_air
+        / (_MOLECULAR_WEIGHT_RATIO + humidity_ratio_kg_kg_dry_air)
+    )
+
+
+def _humidity_ratio_from_wet_bulb(
+    dry_bulb_temperature_c: float,
+    wet_bulb_temperature_c: float,
+    pressure_pa: float,
+) -> float:
+    """Return humidity ratio from dry- and wet-bulb temperatures.
+
+    Uses the SI forms of ASHRAE Handbook—Fundamentals (2017), Chapter 1,
+    equations 33 and 35, as implemented by PsychroLib 2.5.0. The liquid-water
+    branch is used at and above 0 °C wet bulb; the ice branch is used below
+    0 °C. Temperatures are in °C, pressure is in Pa, and the result is kg water
+    per kg dry air.
+    """
+    dry_bulb_temperature_c = _temperature_c(dry_bulb_temperature_c)
+    wet_bulb_temperature_c = _temperature_c(wet_bulb_temperature_c)
+    pressure_pa = _pressure_pa(pressure_pa)
+    if (
+        wet_bulb_temperature_c
+        > dry_bulb_temperature_c + _STATE_TEMPERATURE_TOLERANCE_C
+    ):
+        raise ValueError(
+            "wet_bulb_temperature_c must not exceed dry_bulb_temperature_c"
+        )
+    wet_bulb_temperature_c = min(
+        wet_bulb_temperature_c, dry_bulb_temperature_c
+    )
+
+    saturation_pressure = saturation_vapor_pressure(wet_bulb_temperature_c)
+    saturated_ratio = humidity_ratio(saturation_pressure, pressure_pa)
+    if wet_bulb_temperature_c >= 0.0:
+        result = (
+            (2501.0 - 2.326 * wet_bulb_temperature_c) * saturated_ratio
+            - 1.006 * (dry_bulb_temperature_c - wet_bulb_temperature_c)
+        ) / (
+            2501.0
+            + 1.86 * dry_bulb_temperature_c
+            - 4.186 * wet_bulb_temperature_c
+        )
+    else:
+        result = (
+            (2830.0 - 0.24 * wet_bulb_temperature_c) * saturated_ratio
+            - 1.006 * (dry_bulb_temperature_c - wet_bulb_temperature_c)
+        ) / (
+            2830.0
+            + 1.86 * dry_bulb_temperature_c
+            - 2.1 * wet_bulb_temperature_c
+        )
+    if result < 0.0:
+        raise ValueError(
+            "dry- and wet-bulb temperatures imply a negative humidity ratio"
+        )
+    return result
+
+
+def solve_state(
+    dry_bulb_temperature_c: float,
+    *,
+    pressure_pa: float,
+    relative_humidity: float | None = None,
+    dew_point_temperature_c: float | None = None,
+    humidity_ratio_kg_kg_dry_air: float | None = None,
+    wet_bulb_temperature_c: float | None = None,
+) -> PsychrometricState:
+    """Solve a moist-air state from one supported pair and explicit pressure.
+
+    Dry-bulb temperature must be combined with exactly one of relative
+    humidity, dew-point temperature, humidity ratio, or wet-bulb temperature.
+    Relative humidity follows ASHRAE equation 12; dew point supplies saturation
+    pressure through equation 36; humidity ratio is inverted from equation 20;
+    and wet bulb uses the SI liquid/ice forms of equations 33 and 35.
+    The final state is constructed by :func:`calculate_state`, keeping the
+    established ASHRAE calculation path common to every input pair.
+    """
+    dry_bulb_temperature_c = _temperature_c(dry_bulb_temperature_c)
+    pressure_pa = _pressure_pa(pressure_pa)
+    humidity_inputs = {
+        "relative_humidity": relative_humidity,
+        "dew_point_temperature_c": dew_point_temperature_c,
+        "humidity_ratio_kg_kg_dry_air": humidity_ratio_kg_kg_dry_air,
+        "wet_bulb_temperature_c": wet_bulb_temperature_c,
+    }
+    provided = [
+        name for name, value in humidity_inputs.items() if value is not None
+    ]
+    if len(provided) != 1:
+        raise ValueError(
+            "provide exactly one of relative_humidity, dew_point_temperature_c, "
+            "humidity_ratio_kg_kg_dry_air, or wet_bulb_temperature_c"
+        )
+
+    selected = provided[0]
+    if selected == "relative_humidity":
+        return calculate_state(
+            dry_bulb_temperature_c,
+            relative_humidity,
+            pressure_pa,
+        )
+
+    saturation_pressure = saturation_vapor_pressure(dry_bulb_temperature_c)
+    if selected == "dew_point_temperature_c":
+        dew_point = _temperature_c(dew_point_temperature_c)
+        if dew_point > dry_bulb_temperature_c + _STATE_TEMPERATURE_TOLERANCE_C:
+            raise ValueError(
+                "dew_point_temperature_c must not exceed "
+                "dry_bulb_temperature_c"
+            )
+        partial_pressure = saturation_vapor_pressure(
+            min(dew_point, dry_bulb_temperature_c)
+        )
+    elif selected == "humidity_ratio_kg_kg_dry_air":
+        partial_pressure = _vapor_pressure_from_humidity_ratio(
+            humidity_ratio_kg_kg_dry_air, pressure_pa
+        )
+    else:
+        ratio = _humidity_ratio_from_wet_bulb(
+            dry_bulb_temperature_c,
+            wet_bulb_temperature_c,
+            pressure_pa,
+        )
+        partial_pressure = _vapor_pressure_from_humidity_ratio(
+            ratio, pressure_pa
+        )
+
+    relative_humidity = partial_pressure / saturation_pressure
+    if not 0.0 <= relative_humidity <= 1.0:
+        raise ValueError(
+            f"{selected} implies a physically impossible state at the "
+            "specified dry-bulb temperature and pressure"
+        )
+    return calculate_state(
+        dry_bulb_temperature_c,
+        relative_humidity,
+        pressure_pa,
     )
