@@ -86,6 +86,53 @@ not have to be one of the known properties. Every route returns the same
 | Tdp + RH | Yes |
 | h + RH | Yes |
 
+### Choosing the `solve_state()` arguments
+
+Choose the row that matches the two psychrometric properties you already know,
+then pass those arguments together with `pressure_pa`.
+
+| If you know... | Use these `solve_state()` arguments | Units |
+|---|---|---|
+| Tdb + RH | `dry_bulb_temperature_c` + `relative_humidity` | °C + fraction (0 to 1) |
+| Tdb + Tdp | `dry_bulb_temperature_c` + `dew_point_temperature_c` | °C + °C |
+| Tdb + W | `dry_bulb_temperature_c` + `humidity_ratio_kg_kg_dry_air` | °C + kg water/kg dry air |
+| Tdb + Twb | `dry_bulb_temperature_c` + `wet_bulb_temperature_c` | °C + °C |
+| h + W | `enthalpy_kj_kg_dry_air` + `humidity_ratio_kg_kg_dry_air` | kJ/kg dry air + kg water/kg dry air |
+| v + W | `specific_volume_m3_kg_dry_air` + `humidity_ratio_kg_kg_dry_air` | m³/kg dry air + kg water/kg dry air |
+| Tdp + RH | `dew_point_temperature_c` + `relative_humidity` | °C + fraction (0 to 1) |
+| h + RH | `enthalpy_kj_kg_dry_air` + `relative_humidity` | kJ/kg dry air + fraction (0 to 1) |
+
+Atmospheric pressure is always required, for example:
+
+```python
+pressure_pa=101325.0
+```
+
+For example, if you know dry-bulb temperature and wet-bulb temperature:
+
+```python
+from psychrometrics import solve_state
+
+state = solve_state(
+    dry_bulb_temperature_c=25.0,
+    wet_bulb_temperature_c=17.8894,
+    pressure_pa=101325.0,
+)
+```
+
+If you know enthalpy and humidity ratio instead, dry-bulb temperature does not
+need to be supplied:
+
+```python
+from psychrometrics import solve_state
+
+state = solve_state(
+    enthalpy_kj_kg_dry_air=50.32196,
+    humidity_ratio_kg_kg_dry_air=0.00988115,
+    pressure_pa=101325.0,
+)
+```
+
 ```python
 from psychrometrics import solve_state
 
